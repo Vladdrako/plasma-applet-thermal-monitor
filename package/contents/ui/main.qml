@@ -32,11 +32,7 @@ Item {
 
     property bool initialized: false
 
-
     // configuration
-
-
-
     property int temperatureUnit: plasmoid.configuration.temperatureUnit
     property string configuredResources: plasmoid.configuration.resources
     property int baseWarningTemperature: plasmoid.configuration.warningTemperature
@@ -50,6 +46,8 @@ Item {
     property color warningColor: Qt.tint(theme.textColor, '#60FF0000')
     property var textFontFamily: theme.defaultFont.family
 
+    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
+
     property double aliasFontSize: itemHeight * plasmoid.configuration.aliasFontSize * 0.01
     property double temperatureFontSize: itemHeight * plasmoid.configuration.temperatureFontSize * 0.01
     property double iconFontSize: itemHeight * plasmoid.configuration.iconFontSize * 0.01
@@ -59,8 +57,8 @@ Item {
     property bool enableLabelDropShadow: plasmoid.configuration.enableLabelDropShadow
     property bool transparentBackground: plasmoid.configuration.transparentBackground
 
-    property var systemmonitorAvailableSources: []
-    property var systemmonitorSourcesToAdd: []
+    property var systemmonitorAvailableSources
+    property var systemmonitorSourcesToAdd
 
     property int numberOfParts: temperatureModel.count
 
@@ -74,10 +72,6 @@ Item {
     Layout.preferredHeight: widgetHeight
 
     property bool debugLogging: false
-
-    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
-    Plasmoid.backgroundHints: transparentBackground ? "NoBackground":"StandardBackground";
-
 
     function dbgprint(msg) {
         if (!debugLogging) {
@@ -179,6 +173,13 @@ Item {
         reloadAllSources()
     }
 
+    function getSystemmonitorAvailableSources() {
+        if (!systemmonitorAvailableSources) {
+            systemmonitorAvailableSources = systemmonitorDS.sources
+        }
+        return systemmonitorAvailableSources
+    }
+
     function action_reloadSources() {
         reloadAllSources()
     }
@@ -193,6 +194,10 @@ Item {
 
         if (!systemmonitorAvailableSources) {
             systemmonitorAvailableSources = []
+        }
+
+        if (!systemmonitorSourcesToAdd) {
+            systemmonitorSourcesToAdd = []
         }
 
         if (systemmonitorDS.connectedSources === undefined) {
@@ -211,12 +216,18 @@ Item {
             atiDS.connectedSources = []
         }
 
+        if (nvmeDS.connectedSources === undefined) {
+            nvmeDS.connectedSources = []
+        }
+
         systemmonitorSourcesToAdd.length = 0
         systemmonitorDS.connectedSources.length = 0
         udisksDS.connectedSources.length = 0
         udisksDS.cmdSourceBySourceName = {}
         nvidiaDS.connectedSources.length = 0
         atiDS.connectedSources.length = 0
+        nvmeDS.connectedSources.length = 0
+        nvmeDS.cmdSourceBySourceName = {}
 
         ModelUtils.initModels(resources, temperatureModel)
 
@@ -274,16 +285,23 @@ Item {
 
             addToSourcesOfDatasource(atiDS, atiDS.atiSource)
 
-        } else {
+        } else if (source.indexOf('nvme/') === 0) {
+            var diskLabel = source.substring('nvme/'.length)
+            var cmdSource = ModelUtils.getNvmeTemperatureCmd(diskLabel)
+            nvmeDS.cmdSourceBySourceName[cmdSource] = source
+
+            dbgprint('adding source to nvmeDS: ' + cmdSource)
+
+            addToSourcesOfDatasource(nvmeDS, cmdSource)
+        }
+        else {
 
             dbgprint('adding source to systemmonitorDS: ' + source)
 
-            if (systemmonitorDS.sources.indexOf(source) > -1) {
-                // this is an existing source of systemmonitorDS so we can connect it
+            if (getSystemmonitorAvailableSources().indexOf(source) > -1) {
                 dbgprint('adding to connected')
                 addToSourcesOfDatasource(systemmonitorDS, source)
             } else {
-                // the source does not exist in systemmonitorDS (yet...) so we can't add yet it but we store it to add it if it appears later
                 dbgprint('adding to sta')
                 systemmonitorSourcesToAdd.push(source)
             }
@@ -312,6 +330,7 @@ Item {
 
             if (source.indexOf(lmSensorsStart) === 0 || source.indexOf(acpiStart) === 0) {
 
+                systemmonitorAvailableSources.push(source)
                 var staIndex = systemmonitorSourcesToAdd.indexOf(source)
                 if (staIndex > -1) {
                     addToSourcesOfDatasource(systemmonitorDS, source)
@@ -349,6 +368,27 @@ Item {
                 dbgprint('new data error: ' + data.stderr)
             } else {
                 temperature = ModelUtils.getCelsiaFromUdisksStdout(data.stdout)
+            }
+
+            ModelUtils.updateTemperatureModel(temperatureModel, cmdSourceBySourceName[sourceName], temperature)
+        }
+        interval: updateInterval
+    }
+
+    PlasmaCore.DataSource {
+        id: nvmeDS
+        engine: 'executable'
+        property var cmdSourceBySourceName
+
+        onNewData: {
+
+            dbgprint('nvme new data - valid: ' + valid + ', stdout: ' + data.stdout)
+
+            var temperature = 0
+            if (data['exit code'] > 0) {
+                dbgprint('new data error: ' + data.stderr)
+            } else {
+                temperature = ModelUtils.getCelsiaFromNvmeStdout(data.stdout)
             }
 
             ModelUtils.updateTemperatureModel(temperatureModel, cmdSourceBySourceName[sourceName], temperature)
